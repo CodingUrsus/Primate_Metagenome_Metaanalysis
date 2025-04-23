@@ -46,3 +46,18 @@ Metagenome-derived microbial protein families display evidence of codiversificat
 
 ---
 
+## Code Outline
+
+The code used for the analysis is organized in the following order:
+
+1.  `download_sra_data.py`: Downloads data from the Sequence Read Archive (SRA).
+2.  `change_SRA_file_names.py`: Changes the names of the SRA files.
+3.  `primate_data_to_IGC.py`:  Processes primate data to produce host-specific sets of metagenome-derived microbial gene content.
+4.  `translate_fasta.py`: Translates nucleotide sequences to protein sequences.
+5.  `cdhit_whole_directory.py` and `subset_genes_with_proteins.py`: Identifies a non-redundant set of sequences at a 95% threshold and retrieves the corresponding non-redundant set of genes.
+6.  `meta_mapper.py` and `read_to_bam.py`: Maps quality-controlled reads against the set of non-redundant genes.
+7.  `kegg_diamond_mapper.py`:  Maps non-redundant gene sequences to the KEGG database.
+8.  `KO_count_table_merge_wrapper.py`: Merges the KEGG and gene catalog mappings.
+9.  `merge_KO_files.py`: Merges all count tables from all host taxa to produce a comprehensive count table.
+10. `analysis_HQ.Rmd`: Unifies analyses and figure generation into one script.
+---
