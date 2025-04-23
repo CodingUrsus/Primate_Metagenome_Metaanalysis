@@ -2,23 +2,23 @@
 
 ## Overview
 
-This repository contains data and code for a comprehensive meta-analysis of functional metagenomic data from primate gut microbiomes. The study investigates how host evolutionary history, dietary strategy, and industrialization shape gut microbiome function and diversity. By leveraging functional annotations, phylogenetic analyses, and comparative genomics, the project illuminates key microbial traits that have co-evolved with primate hosts and highlights the influence of modern lifestyles on microbiome composition and functionality.
+This repository contains data and code for a comprehensive meta-analysis of functional metagenomic data from primate gut microbiomes. The study investigates how host evolutionary history connects to gut microbiome function and diversity. By leveraging functional metagenome annotation and clustering, phylogenetic analyses, and comparative metagenomics, the project illuminates key microbial functions that appear to have codiversified across primate hosts and highlights how the abundance of these phylogeny-linked traits vary across human subjects that live in industrialized environments and suffer from chronic disease.
 
 ## Key Insights
 
 ### Functional Composition and Industrialization
 
-The functional composition of primate gut microbiomes shows significant associations with industrialization, dietary strategy, and host taxonomy. Ordination analyses reveal clustering of microbiomes by these factors, emphasizing the interplay between host lifestyle and microbial function.
+The functional composition of primate gut microbiomes shows significant associations with industrialization, dietary strategy, and host taxonomy. Ordination analyses reveal clustering of microbiomes by these factors, pointing to the significance of host taxonomy and microbial function.
 
 ![Functional composition ordinations](results/figures/ordinations.png)
 *Figure 1: Functional composition of primate gut microbiomes associates with industrialization, dietary strategy, and host taxonomy.*
 
 ### Functional Phylosymbiosis
 
-Functional phylosymbiosis is observed across primate taxa, where microbial functional traits mirror host evolutionary relationships. Mantel tests and phylogenetic signal analyses highlight the deep evolutionary ties between host taxa and their associated microbiomes.
+Functional phylosymbiosis is observed across primate taxa, where microbial functional traits mirror host evolutionary relationships. Examining the the correlation between primate phylogenetic history and the diversity of primate metagenomes  highlights the deep evolutionary ties between host taxa and their associated microbial metagenomes. Various primate clades manifest especially strong phylosymbiotic signal.
 
 <img src="results/figures/micro_mantel.png" alt="Functional phylosymbiosis" style="width:60%; height:60%;">
-*Figure 2B: Functional phylosymbiosis across primate host taxa.*
+*Figure 2: Functional phylosymbiosis across primate clades.*
 
 ### Phylogenetic Signal in Microbial Functions
 
@@ -36,7 +36,7 @@ Protein family diversity within gut microbes parallels primate host phylogeny. C
 
 ### Phylogenetic and Functional Divergences
 
-Phylogenetic trees with heatmap rings highlight genus-level protein family distributions, while boxplots demonstrate functional divergences in human populations compared to non-human primates. These visualizations underscore the impact of industrialization and diet on human gut microbiomes.
+Metagenome-derived microbial protein families display evidence of codiversification with the primate hosts they are derived from. These functions which are linked to primate phylogenetic history are differentially enriched among human subjects with IBD and those who live in industrialized environments.
 
 ![Genus-level protein family phylogeny](results/figures/genus_protein_phylogeny.png)
 *Figure 5A: Phylogenetic trees with heatmap rings of protein family distributions.*
