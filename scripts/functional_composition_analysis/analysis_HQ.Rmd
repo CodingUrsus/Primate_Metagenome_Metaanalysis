@@ -1,0 +1,1075 @@
+---
+title: "Dissertation_Code"
+author: "Austin"
+date: "2024-07-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs_and_data}
+library(tidyverse)
+library(vegan)
+library(phytools)
+library(cowplot)
+library(phangorn)
+library(ape)
+library(ggtree)
+library(pheatmap)
+library(caret)
+library(dendextend)
+library(ggdendro)
+library(ggthemes)
+library(ggpubr)
+library(tidytree)
+library(phytools)
+library(ade4)
+library(dplyr)
+library(PNWColors)
+library(viridis)
+
+## Tree, Metadata, and KO count data
+all_primates_tree <- ape::read.tree("/raid1/home/micro/hammera/r_files/IGC/Primate_Analyses/host_taxa.nwk")
+final_table <- readRDS("/raid1/home/micro/hammera/r_files/IGC/Primate_Analyses/KO_host_table.rds")
+full_metadata <- readRDS("/raid1/home/micro/hammera/r_files/IGC/Primate_Analyses/metadata_with_yatsunenko.rds") %>%
+  mutate(industrialized = ifelse(habitation_status=="wild_primate | non-western_human", "Non-Industrialized Humans and Primates", "Industrialized Humans and Primates"))
+host_taxonomy <- read.csv("/raid1/home/micro/hammera/r_files/IGC/Primate_Analyses/host_phylogeny.csv")
+
+the_order <- c("Papio_anubis", "Papio_hamadryas", "Papio_ursinus", "Papio_cynocephalus", "Theropithecus_gelada", "Macaca_mulatta", "Macaca_fuscata", "Macaca_fascicularis", "Cercopithecus_ascanius", "Colobus_guereza", "Piliocolobus_badius", "Homo_sapiens", "Pan_troglodytes", "Gorilla_gorilla", "Alouatta_caraya", "Alouatta_seniculus", "Alouatta_palliata", "Alouatta_pigra", "Ateles_belzebuth", "Ateles_hybridus", "Lagothrix_lagotricha", "Cebus_imitator", "Eulemur_rubriventer", "Lemur_catta", "Propithecus_verreauxi")
+
+diet_palette <- pnw_palette("Sunset2", 2, type = c("discrete"))
+industrialized_palette <- pnw_palette("Bay", 2, type = c("discrete"))
+disease_palette <- pnw_palettes$Sunset2[1,c(2,4)]#pnw_palette("Starfish", 2, type=c("discrete"))
+
+```
+
+```{r custom_functions}
+## this function takes a count table and cutoff level and filters
+## KOs based on the provided cutoff
+remove_rare <- function(table , cutoff_pro) {
+  row2keep <- c()
+  cutoff <- ceiling(cutoff_pro * ncol(table))
+  for (i in 1:nrow(table)) {
+    row_nonzero <- length(which(table[i,] > 0))
+    if (row_nonzero >= cutoff ) {
+      row2keep <- c(row2keep, i)
+    }
+  }
+  return(table[row2keep, ,drop=F ])
+}
+
+## reduce data dimensions
+remove_using_kw <- function(table, metadata_variable){
+  kw_p_values <- c()
+  orders <- c()
+  for (i in 1:100) {
+    kw_test <- kruskal.test(list(table[i,], metadata_variable))
+    kw_p_values[i] <- kw_test$p.value
+    print(kw_test$p.value)
+  }
+  small_p_vals <- (p.adjust(kw_p_values, method="bonferroni"))<0.5
+  filtered_table <- subset(table, small_p_vals)
+  return(t(filtered_table))
+}
+
+## plot a dendrogram of taxa, note that this assumes a count table that has some 
+## summarized metric (i.e. mean, median, etc.)
+plot_taxa_dendrogram <- function(the_count_table){
+  an_hclust_object <- hclust(dist((the_count_table)))
+  plot(x=an_hclust_object, labels = row.names(an_hclust_object))
+  return(an_hclust_object)
+}
+
+## takes count table, groups by some_variable, and summarizes using the median
+
+## Takes the count table, and a vector or df that has the same number of
+## rows as the count table, 
+get_taxa_median <- function(count_table_to_summarize, var_to_group_by){
+  median_count_table <- count_table_to_summarize %>%
+  mutate(grouping_var = var_to_group_by) %>%
+  group_by(grouping_var) %>%
+  summarize_all(median)
+  table_names <- median_count_table$grouping_var
+  final_count_table <- median_count_table %>%
+    dplyr::select(-grouping_var)
+  final_count_table <- as.data.frame(final_count_table)
+  row.names(final_count_table) <- table_names
+  return(final_count_table)
+}
+
+## takes a set of p_values in a df with rownames, a table with names that contain
+## the p-value rownames, and a phylogenetic tree, and outputs a df that is 
+## nearly ready to be put in a heatmap
+build_pagels_df <- function(p_val_df, set_of_KOs, phylogenetic_tree){
+  KOs_you_keep <- rownames(p_val_df)
+  selected_df <- set_of_KOs %>%
+    dplyr::select(all_of(KOs_you_keep))
+  add_one <- selected_df + 1
+  log_of_df <- log10(add_one)
+  final_df <- log_of_df[order(match(rownames(log_of_df), phylogenetic_tree$tip.label)), ]
+  return(final_df)
+}
+
+## Very simple, give it some KOS and metadata, it runs KW test, and returns p-value
+## run this with apply or  a for loop and you can subset adjusted p-values
+## for the KOs of interest
+differential_abundance_using_KW <- function(KOs_to_test, metadata_param){
+  hypo_test <- kruskal.test(metadata_param~KOs_to_test)
+  return(hypo_test$p.value)
+}
+
+## Does what it says on the box. takes a count table, uses bray-curtis dissim to build
+## a dist matrix, then returns an hclust obj
+get_hclust_from_count_data <- function(your_count_table){
+  temp_dist_obj <- vegdist(your_count_table, method="bray")
+  temp_hclust_obj <- hclust(temp_dist_obj)
+  return(temp_hclust_obj)
+}
+
+## test for stuff
+phylo_vs_dist <- function(tree_to_use, df_of_interest){
+  make_a_dist_object <- data.frame(as.matrix(vegdist(df_of_interest, method="jaccard")))
+  tree_distance <- data.frame((cophenetic.phylo(tree_to_use)))
+  tree_distance2 <- tree_distance[order(rownames(tree_distance)),order(colnames(tree_distance))]
+  df_for_correlation <- data.frame(veg_dist = make_a_dist_object$Homo_sapiens,
+  tree_dist = tree_distance2$Homo_sapiens)
+  filtered_corr_df <- filter(df_for_correlation, !(rowSums(df_for_correlation)==0))
+  print(cor.test(filtered_corr_df$veg_dist, filtered_corr_df$tree_dist))
+  return(filtered_corr_df)
+}
+
+
+cophylo_forest <- function(all_primates_tree, tree_index_number){
+  random_tree <- read.tree(paste0("/raid1/home/micro/hammera/darwinR/IGC/parafit/results/trees/", only_significant_hits$small_cluster_name[tree_index_number], ".nwk"))
+  treesplit <- str_split(random_tree$tip.label, "_")
+  prot_tree_list <- plyr::ldply(treesplit, rbind)
+  assoc_matrix <- cbind(random_tree$tip.label, paste0(prot_tree_list$`1`, "_", prot_tree_list$`2`))
+  used_primates_tree <- keep.tip(all_primates_tree, all_primates_tree$tip[all_primates_tree$tip.label %in% assoc_matrix[,2]])
+  coobj <- cophylo(random_tree, used_primates_tree, assoc_matrix, rotate=T, show.tip.label=F)
+  return((coobj))
+}
+
+wilcox_test_wrapper <- function(fin_table, f_metadata, grouping_col) {
+
+  # Initialize a dataframe to store p-values
+  pagel_sizes <- data.frame(column = colnames(fin_table), p_value = NA)
+
+  # Iterate through each column in full_metadata
+  for (i in 1:ncol(fin_table)) {
+    column_name <- colnames(fin_table)[i]
+
+    # Check if column is numeric/integer (suitable for Wilcoxon)
+    if (is.numeric(fin_table[[column_name]]) | is.integer(fin_table[[column_name]])) {
+      
+      # Perform Wilcoxon rank sum test
+      y <- fin_table[[column_name]]
+      x <- f_metadata[[grouping_col]]
+      result <- wilcox.test(y~x)
+      
+      # Store the p-value in the dataframe
+      pagel_sizes$p_value[i] <- result$p.value
+    } else {
+      # Skip columns that are not numeric
+      cat(paste0("Skipping column ", column_name, " (not numeric)\n"))
+    }
+  }
+
+  return(pagel_sizes)
+}
+
+
+create_heatmap_set <- function(joined_data, host_taxonomy, index_range) {
+
+  heatmap_plot_set <- list()  # To store plots for each index
+  j <- 0
+  for (i in index_range) {
+    # Read the tree
+    j <- j+1
+    tree_file <- paste0("/raid1/home/micro/hammera/darwinR/IGC/parafit/results/trees/", joined_data$small_cluster_name[i], ".nwk")
+    random_tree <- read.tree(tree_file)
+
+    # Extract and update tip labels 
+    new_tip_names <- sapply(random_tree$tip.label, function(x) {
+      parts <- strsplit(x, "_")[[1]]
+      paste(parts[1], parts[2], sep = "_")
+    })
+
+    # Create mapping dataframe for gheatmap
+    mapping_df <- data.frame(
+      tip_names = random_tree$tip.label,
+      X1 = new_tip_names
+    ) %>%
+      left_join(host_taxonomy) %>%
+      dplyr::select(Family)
+    rownames(mapping_df) <- random_tree$tip.label
+
+    # Create the gheatmap plot
+    fp1 <- ggtree(random_tree, layout = "circular")
+    fp2 <-  gheatmap(fp1, data = mapping_df, offset = 0.02, width = 0.2, 
+               colnames_angle = 95, colnames_offset_y = 0.25) +
+      scale_fill_viridis_d(option = "D") +
+      ggtitle(paste0(joined_data$small_cluster_name[i])) +
+      theme(legend.position = "none")
+
+    heatmap_plot_set[[j]] <- fp2  # Store the plot in the list
+  }
+
+  return(heatmap_plot_set)
+}
+
+
+plot_a_tree <- function(some_host_tree, some_protein_tree){
+  some_tree_labels <- some_protein_tree$tip.label
+  my_vec <- c()
+  for(i in some_tree_labels){
+    m1 <- str_split(i, "_")
+    hostess_roll <- (paste0(m1[[1]][1], "_", m1[[1]][2]))
+    my_vec <- c(my_vec, hostess_roll)
+  }
+  initial_data_frame <- data.frame(some_tree_labels, my_vec)
+  tree_reborn <- keep.tip(some_host_tree, unique(my_vec))
+  some_plot <- cophylo(some_protein_tree, tree_reborn, assoc=as.matrix(initial_data_frame), show.tip.label = FALSE)
+  plot.cophylo(some_plot, show.tip.label = FALSE, ftype="off")
+  return(some_plot)
+}
+
+generate_ggtree_plot <- function(phylo_tree, host_tax, tax_lev, cluster_num) {
+  # Generate color palettes
+  unique_genera <- unique(host_tax$Genus)
+  unique_family <- unique(host_tax$Family)
+  genus_colors <- setNames(viridis_pal(option = "D")(length(unique_genera)), unique_genera)
+  family_colors <- setNames(viridis_pal(option = "D")(length(unique_family)), unique_family)
+  
+  # Choose the appropriate palette
+  chosen_palette <- if (tax_lev == "Genus") {
+    genus_colors
+  } else if (tax_lev == "Family") {
+    family_colors
+  } else {
+    stop("Unsupported taxonomic level")
+  }
+  
+  # Debugging: print the chosen palette
+  print(chosen_palette)
+  
+  # Extract species names and update tip labels
+  new_tip_names <- sapply(phylo_tree$tip.label, function(x) {
+    parts <- strsplit(x, "_")[[1]] 
+    paste(parts[1], parts[2], sep = "_")
+  })
+  
+  # Create a mapping dataframe and join with host taxonomy
+  mapping_df <- data.frame("tip_names" = phylo_tree$tip.label, "X1" = new_tip_names) %>%
+    left_join(host_tax, by = c("X1")) %>%
+    dplyr::select(all_of(tax_lev))
+  
+  rownames(mapping_df) <- phylo_tree$tip.label
+  
+  # Generate ggtree plot
+  ggtree_obj <- ggtree(phylo_tree, layout = "circular")
+  ggtree_plot <- gheatmap(ggtree_obj, data = mapping_df, offset = .02, width = .2,
+                          colnames_angle = 95, colnames_offset_y = .25,
+                          colnames=F) +
+    scale_fill_manual(values = chosen_palette,  name = tax_lev) +
+    theme(plot.caption = element_text(hjust = 0.5, size=12)) +
+    labs(caption=paste0("Inferred Phylogenetic Relationships of Cluster ", cluster_num))
+  
+  return(ggtree_plot)
+}
+```
+
+```{r betadiv}
+set.seed(111)
+count_data_dist <- vegdist(final_table, method="bray")
+ordination <- metaMDS(final_table, distance="bray", k=2, try=100)
+data.scores <- as.data.frame(vegan::scores(ordination, display=c("sites")))
+data.scores <- data.frame(cbind(data.scores, full_metadata))
+data.scores$distinguishing_homo_sapiens[data.scores$distinguishing_homo_sapiens == "HMP2"] <- "Humans with IBD"
+data.scores$distinguishing_homo_sapiens[data.scores$distinguishing_homo_sapiens == "non-human primate"] <- "Non-Human Primates"
+
+genus_adonis <- adonis2(count_data_dist~diet+habitation_status+Genus, data.scores, permutations = 10000)
+family_adonis <- adonis2(count_data_dist~diet+habitation_status+Family, data.scores, permutations = 10000)
+
+# Calculate Bray-Curtis dissimilarity
+bray_curtis_matrix <- vegdist(final_table, method = "bray")
+nmds_result <- vegan::metaMDS(bray_curtis_matrix, trymax=100, k=2)
+nmds_scores <- data.frame(cbind(full_metadata, (vegan::scores(nmds_result)))) %>%
+  left_join(host_taxonomy)
+
+cent <- aggregate(cbind(NMDS1, NMDS2)~Family, data=nmds_scores, FUN = mean)
+
+nmds_scores_with_centroid <- merge(nmds_scores, setNames(cent, c("Family", 'oNMDS1', 'oNMDS2')), by = 'Family', sort=FALSE)
+
+chosen_palette <- pnw_palette(name="Starfish",n=6,type="discrete")
+
+plot_1b <- nmds_scores %>%
+  ggplot(aes(x = NMDS1, y = NMDS2, colour = Family)) +
+  geom_segment(data = nmds_scores_with_centroid,
+               mapping = aes(xend = oNMDS1, yend = oNMDS2)) + # spiders
+  geom_point(data = cent, size = 5) +                         # centroids
+  geom_point(size=1.5) +
+  coord_fixed() +
+  scale_color_manual(values = chosen_palette) +
+  theme_bw() +
+  theme(
+    legend.text = element_text(size = 16),  # Increase legend text size
+    legend.title = element_text(size = 18),  # Increase legend title size
+    axis.title.x = element_text(size = 18),  # Increase x-axis label size
+    axis.title.y = element_text(size = 18)   # Increase y-axis label size
+  )
+
+plot_1c <- nmds_scores %>%
+  mutate(dietary_strat = ifelse(diet=="Folivore", "Primary Folivore", "Primary Omnivore")) %>%
+  ggplot(aes(x = NMDS1, y = NMDS2, colour = dietary_strat)) +
+  geom_point(size=3) +
+  coord_fixed() +
+  scale_color_manual(values = diet_palette) +
+  theme_bw() +
+  theme(
+    legend.text = element_text(size = 14),  # Increase legend text size
+    legend.title = element_text(size = 16),  # Increase legend title size
+    axis.title.x = element_text(size = 18),  # Increase x-axis label size
+    axis.title.y = element_text(size = 18)   # Increase y-axis label size
+  ) +
+  labs(color = "Dietary Strategy")  # Set the legend title to "Diet"
+
+plot_1d <- nmds_scores %>%
+  ggplot(aes(x = NMDS1, y = NMDS2, colour = industrialized)) +
+  geom_point(size=3) +
+  coord_fixed() +
+  scale_color_manual(values = industrialized_palette) +
+  theme_bw() +
+  theme(
+    legend.text = element_text(size = 14),  # Increase legend text size
+    legend.title = element_text(size = 16),  # Increase legend title size
+    axis.title.x = element_text(size = 18),  # Increase x-axis label size
+    axis.title.y = element_text(size = 18)   # Increase y-axis label size
+  ) +
+  labs(color = "Industrialization Status")  # Set the legend title to "Diet"
+
+combined_plot <- ggarrange(
+  ggarrange(plot_1d, plot_1c, ncol = 2, labels = c("A", "B"), font.label=list(size=32, face="bold")),  # Top row with two plots
+  plot_1b,                                                      # Bottom row with one plot
+  ncol = 1, nrow = 2,                                           # 1 column, 2 rows
+  labels = c("", "C"),                                          # Only label the bottom plot as "C"
+  heights = c(1, 1.2),                                          # Adjust relative heights
+  font.label = list(size = 32, face = "bold")                   # Increase label font size
+)
+```
+
+```{r build_median_tables, include=FALSE, comment=NA}
+common_KOs <- data.frame(t(remove_rare(t(final_table), 0.99)))
+
+common_KOs_table <- get_taxa_median(common_KOs, full_metadata$X1)
+
+all_primates_table <- get_taxa_median(final_table, full_metadata$X1)
+
+all_primates_table_small <- data.frame(t(remove_rare(t(all_primates_table), 0.95)))
+
+```
+
+```{r homology_comparisons, echo=FALSE}
+non_wild_hosts <- full_metadata %>%
+  filter(habitation_status == "facility-reared | western_human") %>%
+  select(X1) %>%
+  unique()
+
+homology_data <- read.csv("/raid1/home/micro/hammera/r_files/IGC/Primate_Analyses/homology_data.csv", sep = '\t', header = TRUE) %>%
+  filter(host!="Homo_sapiens")
+
+number_proteins <- read.table("/raid1/home/micro/hammera/r_files/IGC/Primate_Analyses/number_proteins.txt")
+colnames(number_proteins) <- c("host", "number_of_proteins")
+
+merge_df <- inner_join(homology_data, number_proteins)
+merged_df <- full_join(merge_df, (host_taxonomy %>%
+                          mutate(host=X1)), by="host")
+
+humanized_df <- full_metadata %>%
+  filter(habitation_status == "facility-reared | western_human")
+
+folivore_df <- full_metadata %>%
+  filter(diet == "Folivore")
+
+humanized_names <- (unique(humanized_df$X1))
+
+df_for_homology_plot <- merged_df %>%
+  mutate(normalized_identity = 100*(percent_homologous / number_of_proteins)) %>%
+  filter(host != "Homo_sapiens") %>%
+  mutate(diet = ifelse(host %in% unique(folivore_df$X1), "Folivores", "Non-Folivores"))
+
+
+ohp <- ggplot(df_for_homology_plot, aes(y=normalized_identity, x=percent_identity, color=Family)) +
+  geom_point() +
+  geom_smooth(se=F) +
+  #  geom_line(aes(width = 0.8)) +
+  theme_classic() +
+  ylab(label = "Percent of Genes in Host IGC") +
+  xlab(label = "Percent Identity to Feature in Human IGC")
+
+ohp
+```
+
+```{r median_pagels_all, include=FALSE, comment=NA}
+set.seed(1001)
+subset_criteria <- !(rownames(all_primates_table_small) %in% c("Cebus_imitator", "Papio_ursinus"))
+subset_primates_table <- subset(all_primates_table_small, subset_criteria)
+subset_tree <- drop.tip(all_primates_tree, c("Cebus_imitator", "Papio_ursinus"))
+subset_pagels <- apply(subset_primates_table, 2, function (x) signal_detection(subset_tree, x, rownames(subset_primates_table)))
+lambda_p_vals <- apply(all_primates_table_small, 2, function (x) signal_detection(all_primates_tree, x, rownames(all_primates_table_small)))
+adjusted_subset <- as.data.frame(p.adjust(subset_pagels, method="fdr"))
+kegg_ko_gene_list <- read_tsv("kegg_ko_gene_list.txt", c("KO", "Function"))
+p_vals_subset <- data.frame(adjusted_subset) %>%
+  filter(adjusted_subset < 0.01) %>%
+  rownames_to_column("KO") %>%
+  left_join(kegg_ko_gene_list)
+
+
+#subset_heatmap_df <- build_pagels_df(p_vals_subset, subset_primates_table, subset_tree)
+#pagels_pheat <- pheatmap(subset_heatmap_df, cluster_cols = TRUE)
+
+pagel_for_heatmap <- subset_primates_table %>%
+  select( K02824)
+
+temp_tree <- ggtree(drop.tip(all_primates_tree, tip=c("Papio_ursinus", "Cebus_imitator")))
+gheatmap(temp_tree,
+         scale((pagel_for_heatmap)),
+         offset = -3, 
+         low = "gold",
+         high= "purple",
+         width=0.1,
+         font.size = 3.5,
+         colnames_angle = 90,
+         colnames = FALSE,
+         legend_title = "Scaled Relative Abundance\nof K02824") +
+  geom_tiplab(offset=10) +
+  expand_limits(x=150) +
+  xlab("") +
+  ggtitle("Scaled Relative Abundance of Uracil Permease Gene")
+
+
+
+
+
+```
+
+```{r industrialized_humans_and_disease}
+rowan_meta <- readRDS("metadata_without_disease.rds")
+rowan_ko <- readRDS
+human_table <- final_table[full_metadata$X1=="Homo_sapiens", p_vals_subset$KO]
+human_metadata <- full_metadata %>%
+  filter(X1=="Homo_sapiens") %>%
+  mutate()
+
+human_metadata$habitation_status
+human_metadata$distinguishing_homo_sapiens
+
+pagel_sizes <- wilcox_test_wrapper(final_table[,p_vals_subset$KO], full_metadata, "habitation_status")
+
+human_meta <- full_metadata %>%
+  filter(X1=="Homo_sapiens") %>%
+  mutate(Industrialization = ifelse(human_meta$habitation_status=="wild_primate | non-western_human", "Non-industrialized Humans", "Industrialized Humans")) %>%
+  mutate(disease = ifelse(study=="HMP2", "IBD", "Non-IBD"))
+
+human_pagel_KO_table <- final_table %>%
+  filter(full_metadata$X1=="Homo_sapiens") %>%
+  dplyr::select(all_of(p_vals_subset$KO))
+
+human_industrialization_KOs <- wilcox_test_wrapper(human_pagel_KO_table, human_meta, "Industrialization")
+
+top_industrialization_KOs <- human_industrialization_KOs %>%
+  slice_min(p_value, n=20)
+
+human_industrialization_KO_table <- human_pagel_KO_table %>%
+  mutate(industrialized = human_meta$Industrialization) %>%
+  dplyr::select(all_of(c(top_industrialization_KOs$column, "industrialized"))) %>%
+  pivot_longer(!industrialized, names_to = "KO", values_to = "Abundance") %>%
+  ggplot(aes(x=industrialized, y=Abundance, color=industrialized)) +
+  geom_boxplot(alpha=0.3, width=0.4, outlier.shape = NA) +
+  geom_jitter(aes(color=industrialized), width=0.15, alpha=0.2) +
+  facet_wrap(~KO, nrow=5, ncol=4, scales = "free_y") +
+  theme_bw() +
+  scale_color_manual(values = habitation_palette)
+
+human_disease_KOs <- wilcox_test_wrapper(human_pagel_KO_table, human_meta, "disease")
+
+top_disease_KOs <- human_disease_KOs %>%
+  slice_min(p_value, n=20)
+
+disease_palette <- pnw_palette("Sunset", 2, type = c("discrete"))
+
+human_disease_KO_table <- human_pagel_KO_table %>%
+  mutate(Disease_Status = human_meta$disease) %>%
+  dplyr::select(all_of(c(top_disease_KOs$column, "Disease_Status"))) %>%
+  pivot_longer(!Disease_Status, names_to = "KO", values_to = "Abundance") %>%
+  ggplot(aes(x=Disease_Status, y=Abundance, color=Disease_Status)) +
+  geom_violin(alpha=0.3, width=0.4, outlier.shape = NA) +
+  geom_jitter(aes(color=Disease_Status), width=0.15, alpha=0.2) +
+  facet_wrap(~KO, nrow=5, ncol=4, scales = "free_y") +
+  theme_bw() +
+  scale_color_manual(values = disease_palette)
+
+
+
+```
+
+```{r phylosymbiosis_preprocess}
+outdoors_primates <- (some_metadata$habitation_status == "wild_primate | non-western_human")
+outdoor_table <- subset(count_data, outdoors_primates)
+outdoor_metadata <- subset(some_metadata, outdoors_primates)
+outdoor_median <- get_taxa_median(outdoor_table, outdoor_metadata$X1)
+outdoor_hclust <- as.phylo(get_hclust_from_count_data(outdoor_median))
+outdoor_labels <- subset(all_primates_tree$tip.label, !(all_primates_tree$tip.label %in% unique(outdoor_metadata$X1)))
+outdoor_tree <- drop.tip(all_primates_tree, (outdoor_labels))
+
+indoor_primates <- (some_metadata$habitation_status == "facility-reared | western_human")
+indoor_table <- subset(count_data, indoor_primates)
+indoor_metadata <- subset(some_metadata, indoor_primates)
+indoor_median <- get_taxa_median(indoor_table, indoor_metadata$X1)
+indoor_hclust <- as.phylo(get_hclust_from_count_data(indoor_median))
+indoor_labels <- subset(all_primates_tree$tip.label, !(all_primates_tree$tip.label %in% unique(indoor_metadata$X1)))
+indoor_tree <- drop.tip(all_primates_tree, (indoor_labels))
+
+just_amato <- !(is.na(some_metadata$country))
+amato_table <- subset(count_data, just_amato)
+amato_metadata <- subset(some_metadata, just_amato)
+amato_median <- get_taxa_median(amato_table, amato_metadata$X1)
+amato_hclust <- as.phylo(get_hclust_from_count_data(amato_median))
+amato_labels <- subset(all_primates_tree$tip.label, !(all_primates_tree$tip.label %in% unique(amato_metadata$X1)))
+amato_tree <- drop.tip(all_primates_tree, (amato_labels))
+
+just_folivores <- (some_metadata$diet == "Folivore")
+folivores_table <- subset(count_data, just_folivores)
+folivores_metadata <- subset(some_metadata, just_folivores)
+folivores_median <- get_taxa_median(folivores_table, folivores_metadata$X1)
+folivores_hclust <- as.phylo(get_hclust_from_count_data(folivores_median))
+folivores_labels <- subset(all_primates_tree$tip.label, !(all_primates_tree$tip.label %in% unique(folivores_metadata$X1)))
+folivores_tree <- drop.tip(all_primates_tree, (folivores_labels))
+```
+
+```{r phylo_with_mantel, echo=FALSE}
+test_with_mantel <- function(tree_to_use, df_of_interest){
+  make_a_dist_object <- vegdist(df_of_interest[order(match(row.names(df_of_interest), tree_to_use$tip.label)),], method="bray")
+  tree_distance <- cophenetic.phylo(tree_to_use)
+  phylosymb_test <- mantel(make_a_dist_object, tree_distance, method = "spearman", permutations = 20000, na.rm = TRUE)
+  return(phylosymb_test)
+}
+
+all_primates_mantel <- test_with_mantel(all_primates_tree, all_primates_median)
+folivores_mantel <- test_with_mantel(folivores_tree, folivores_median)
+indoor_mantel <- test_with_mantel(indoor_tree, indoor_median)
+amato_mantel <- test_with_mantel(amato_tree, amato_median)
+outdoor_mantel <- test_with_mantel(outdoor_tree, outdoor_median)
+
+```
+
+```{r recursive_mantel}
+aptr <- all_primates_tree
+node_labs <- aptr$node.label
+
+tip_lengths <- c()
+mantel_pvals <- c()
+mantel_rvals <- c()
+
+for(name in node_labs) {
+  subtree <- extract.clade(aptr, name)
+  length_tip_labels <- length(subtree$tip.label)
+  tip_lengths <- c(tip_lengths, length_tip_labels)
+  if(length_tip_labels>3){
+    primate_subset_matrix <- all_primates_median[row.names(all_primates_median) %in% subtree$tip.label, ]
+    testing_mantel <- test_with_mantel(subtree, primate_subset_matrix)
+    mantel_pvals <- c(mantel_pvals, testing_mantel$signif)
+    mantel_rvals <- c(mantel_rvals, testing_mantel$statistic)
+  }
+  else{
+    mantel_pvals <- c(mantel_pvals, NA)
+    mantel_rvals <- c(mantel_rvals, NA)
+  }
+}
+
+multiple_mantel_df <- data.frame(mantel_tips = tip_lengths,
+                                 mantel_pval = mantel_pvals,
+                                 mantel_rval = mantel_rvals,
+                                 label = node_labs)
+
+multiple_mantel_df[is.na(multiple_mantel_df)] <- 0
+
+aptr <- all_primates_tree
+
+tttree <- aptr
+
+j <- ggtree(tttree, layout="rectangular") +
+  geom_tiplab()
+
+j$data <- j$data %>%
+  left_join(multiple_mantel_df)
+
+j + geom_nodepoint(aes(subset=(as.numeric(mantel_rvals) > 0.1) & as.numeric(mantel_pvals<0.05)&as.numeric(mantel_tips)>4,
+                     size=as.numeric(mantel_tips)))
+
+sclade <- ggtree(aptr, layout="circular") +
+  geom_tiplab() +
+  geom_hilight(node=30, fill="steelblue", alpha=0.4)
+
+
+# Create a sample circular phylogenetic tree plot
+lclade <- ggtree(aptr, layout = "circular") +
+  geom_tiplab(hjust = 0, align = TRUE) +
+  geom_hilight(node = 29, fill = "steelblue", alpha = 0.4) +
+  ggplot2::xlim(-50, 150)
+
+sclade <- ggtree(aptr, layout = "circular") +
+  geom_tiplab(hjust = 0, align = TRUE) +
+  geom_hilight(node = 30, fill = "steelblue", alpha = 0.4) +
+  ggplot2::xlim(-50, 150)
+
+double_plots <- ggpubr::ggarrange(lclade, sclade, nrow=2, ncol=1)
+```
+
+```{r annotation_summaries}
+unmapped_cluster_annotations <- read_table("/nfs5/Sharpton_Lab/hammera/IGC/workshop/results/combined_output.txt", col_names = c("gene", "base_annotation", "cluster"))
+
+annotation_lines <- readLines("/nfs5/Sharpton_Lab/hammera/IGC/workshop/results/filtered_annotations_no_gt.txt")
+
+# Function to split each line
+split_line <- function(line) {
+  # Find the position of the first space
+  split_pos <- regexpr(" ", line, fixed = TRUE)[1]
+  # Extract identifier and description
+  identifier <- substr(line, 1, split_pos - 1)
+  description <- substr(line, split_pos + 1, nchar(line))
+  return(c(identifier, description))
+}
+
+# Apply the function to each line
+annotation_list <- t(sapply(annotation_lines, split_line))
+
+# Convert the list to a dataframe
+full_annotations <- as.data.frame(annotation_list, stringsAsFactors = FALSE)
+colnames(full_annotations) <- c("base_annotation", "description")
+
+full_joined_annotation_df <- unmapped_cluster_annotations %>%
+  inner_join(full_annotations, by="base_annotation")
+  
+annotation_summary_by_cluster <- full_joined_annotation_df %>%
+  group_by(cluster, description) %>%
+  summarize(description_count = n()) %>%
+  mutate(description_percent = description_count / sum(description_count) * 100) %>%
+  ungroup()
+
+
+```
+
+```{r paco_parafit}
+joined_data <- readRDS("/raid1/home/micro/hammera/darwinR/IGC/parafit/joined_parafit_paco_data.rds")
+
+cluster_number <- plyr::ldply(str_split(joined_data$small_cluster_name, "_"), rbind)
+
+joined_data$numeric_cluster_number <- as.numeric(cluster_number$`2`)
+
+only_significant_hits <- joined_data %>%
+  filter(adjusted_parafit_pvalue<0.01) %>%
+  arrange(adjusted_parafit_pvalue)
+
+random_clusters <- joined_data %>%
+  filter(parafit_pvalue > 0.3 & paco_pvalue > 0.3)
+
+random_tree <- read.tree(paste0("/raid1/home/micro/hammera/darwinR/IGC/parafit/results/trees/",joined_data$small_cluster_name[9934], ".nwk"))
+
+# Extract species name (assuming consistent pattern)
+new_tip_names <- sapply(random_tree$tip.label, function(x) {
+  parts <- strsplit(x, "_")[[1]] 
+  # Join the first two elements to get "Homo_sapiens"
+  paste(parts[1], parts[2], sep = "_")  
+})
+
+# Update tip labels
+mapping_df <- data.frame("tip_names" = random_tree$tip.label,
+                         "X1" = new_tip_names) %>%
+  left_join(host_taxonomy) %>%
+  dplyr::select(Genus)
+rownames(mapping_df) <- random_tree$tip.label
+  
+random_ggtree <- ggtree(random_tree, layout="circular")
+
+rgg <- gheatmap(random_ggtree, data=mapping_df, offset=.02, width=.2,
+               colnames_angle=95, colnames_offset_y = .25) +
+   scale_fill_viridis_d(option="D")
+
+psv <- wrap_plots(create_heatmap_set(joined_data, host_taxonomy, 741:780))
+
+# clusters of note: 10627, 10615, 11463, 11866, 12077, 30455, 29958, 29091, (best so far) 13130, 13816, 13984, 17995
+# somewhat random cluster is 3167, perhaps plot with Genus
+```
+
+```{r paco_parafit_diff_abund}
+parafit_clusters <- true_final_cluster_table %>%
+  dplyr::select(all_of(c(only_significant_hits$small_cluster_name, "sample_names"))) %>%
+  mutate(sample_names = true_final_cluster_table$sample_names) %>%
+  filter(str_detect(sample_names, "Homo_sapiens")) %>%
+  select(where(~ mean(. != 0, na.rm = TRUE) > 0.1))
+
+human_parafit_metadata <- data.frame("sample_names" = parafit_clusters$sample_names) %>%
+  mutate(industrialized = "Industrialized\nHumans") %>%
+  mutate(disease = "Non-IBD")
+
+human_parafit_metadata$industrialized[c(1:30, 69:78)] <- "Non-Industrialized\nHumans"
+human_parafit_metadata$disease[39:68] <- "IBD"
+
+wilcox_cluster_table <- parafit_clusters %>%
+  dplyr::select(-sample_names) %>%
+  mutate(across(where(is.character), as.numeric))
+
+human_cluster_industrialized_test_res <- wilcox_test_wrapper(wilcox_cluster_table, human_parafit_metadata, "industrialized") %>%
+  mutate(FDR_adjust = p.adjust(p_value, method="fdr"))
+
+human_cluster_industrialized_diff <- human_cluster_industrialized_test_res %>%
+  filter(FDR_adjust < 0.1)
+
+human_cluster_disease_test_res <- wilcox_test_wrapper(wilcox_cluster_table, human_parafit_metadata, "disease") %>%
+  mutate(FDR_adjust = p.adjust(p_value, method="fdr"))
+
+human_cluster_disease_diff  <- human_cluster_disease_test_res %>%
+  filter(FDR_adjust < 0.1)
+
+top_20_disease_clusters <- human_cluster_disease_diff %>%
+  slice_min(p_value, n=20)
+
+cluster_diff_plots_disease <- wilcox_cluster_table %>%
+  dplyr::select(all_of(top_20_disease_clusters$column)) %>%
+  mutate(IBD_status = human_parafit_metadata$disease) %>%
+  pivot_longer(!IBD_status, names_to="cluster", values_to="abundance") %>%
+  ggplot(aes(x=IBD_status, y=abundance)) +
+  geom_jitter(width = 0.15) +
+  geom_boxplot(width=0.4, alpha=0.4) +
+  facet_wrap(~cluster, scales = "free_y")
+
+
+top_20_indust_clusters <- human_cluster_industrialized_diff %>%
+  slice_min(p_value, n=20)
+
+cluster_diff_plots <- wilcox_cluster_table %>%
+  dplyr::select(all_of(top_20_indust_clusters$column)) %>%
+  mutate(industrialized = human_parafit_metadata$industrialized) %>%
+  pivot_longer(!industrialized, names_to="cluster", values_to="abundance") %>%
+  ggplot(aes(x=industrialized, y=abundance)) +
+  geom_jitter(width = 0.15) +
+  geom_boxplot(width=0.4, alpha=0.4) +
+  facet_wrap(~cluster, scales = "free_y")
+```
+
+```{r generate_fasta_info}
+mcl_mapping_info <- readRDS("/raid1/home/micro/hammera/r_files/mcl_cluster_analysis/mcl_mapping_info.rds")
+
+significant_parafit_cluster_membership <- mcl_mapping_info %>%
+  dplyr::filter(clusters %in% joined_data$small_cluster_name)
+
+dim(significant_parafit_cluster_membership)
+
+write_tsv(significant_parafit_cluster_membership, "parafit_cluster_membership.tsv")
+```
+
+```{r small_cophyloplot_visualizations}
+tiny_trees_to_visualize <- only_significant_hits %>%
+  filter(nhost+40 > nprotein) %>%
+  mutate(full_tree_name = paste0("/raid1/home/micro/hammera/darwinR/IGC/parafit/results/trees/", small_cluster_name, ".nwk"))
+
+for(i in tiny_keeps){
+  new_tree <- midpoint.root(read.tree(tiny_trees_to_visualize$full_tree_name[i]))
+  print(i)
+  saved_cophylo_plot <- plot_a_tree(all_primates_tree, new_tree)
+}
+
+tiny_keeps <- c(170, 148, 1620, 1619, 1614, 1595, 1519, 1525, 1535, 1541, 1558, 1551, 1553, 1554, 1555, 1556, 1432, 1433, 1434, 1436, 1437)
+
+only_sig_clusters <- only_significant_hits %>%
+  dplyr::select(small_cluster_name)
+
+tiny_clusters_of_interest <- tiny_trees_to_visualize[tiny_keeps,]
+```
+
+```{r visualizing_many_trees}
+# Vector of indices for trees to plot
+tiny_keeps <- c(170, 148, 1620, 1619, 1614, 1595, 1519, 1525, 1535, 1541, 1558, 1551, 1553, 1554, 1555, 1556, 1432, 1433, 1434, 1436, 1437)
+
+# Subset the clusters of interest
+tiny_clusters_of_interest <- tiny_trees_to_visualize[tiny_keeps, ]
+
+# Loop through the trees and plot
+for (i in seq_along(tiny_clusters_of_interest$full_tree_name)) {
+  new_tree <- midpoint.root(read.tree(tiny_clusters_of_interest$full_tree_name[i]))
+  print(i)
+  saved_cophylo_plot <- plot_a_tree(all_primates_tree, new_tree)
+  if (is.null(saved_cophylo_plot)) {
+    message("Skipping tree index ", i, " due to no common tips.")
+    next
+  }
+}
+```
+
+```{r ggtree_cophyloplotting}
+all_primates_tree_subset$tip.label <- all_primates_tree_subset$tip.label
+random_tree
+all_primates_tree_subset
+
+# Calculate scaling factors
+total_branch_length_primates <- max(all_primates_tree_subset$edge.length)
+total_branch_length_random <- max(random_tree$edge.length)
+
+# Determine the scaling factor based on the longer tree
+scale_factor <- total_branch_length_random/total_branch_length_primates
+
+# Rescale the random_tree to match the all_primates_tree
+all_primates_tree_subset$edge.length <- all_primates_tree_subset$edge.length*scale_factor
+
+pr1 <- ggtree(all_primates_tree_subset, layout="rectangular")
+pr2 <- ggtree(random_tree, layout="rectangular")
+
+dr1 <- pr1$data
+dr2 <- pr2$data
+
+dr2$x <- max(dr2$x) - dr2$x + max(dr1$x) + max(dr1$x)*0.3
+
+pp2 <- pr1 + geom_tree(data=dr2, layout='rectangular')
+
+dd2 <- bind_rows(dr1, dr2) %>% 
+  filter(isTip)
+
+pp2 + geom_line(aes(x, y, group=label), data=dd2) +
+  geom_tiplab() +
+    geom_tiplab(geom = 'shadowtext', bg.colour = alpha('firebrick', .5))
+```
+
+```{bash KEGG_annotation_data_collection}
+for file in /nfs5/Sharpton_Lab/hammera/IGC/workshop/results/significant_cluster_annotations/cluster_*_annotation.txt; do cluster=$(basename "$file" | sed 's/.*\(cluster_[0-9]*\).*/\1/'); awk -v cluster="$cluster" '{print $1, $2, cluster}' "$file" >> combined_output.txt; done
+
+awk '{print ">" $2}' combined_output.txt | sort | uniq > simplified_values_to_filter.txt
+awk 'NR==FNR {values[$1]; next} /^>/ {entry=($1 in values)} entry' simplified_values_to_filter.txt /nfs5/Sharpton_Lab/hammera/IGC/workshop/data/all_protein_annotations.txt > filtered_annotations.txt
+
+sed 's/^>//' filtered_annotations.txt > filtered_annotations_no_gt.txt
+```
+
+```{r investigate_kegg_cluster_annotations}
+clusters_to_investigate <- c("cluster_10627", "cluster_10615", "cluster_11463", "cluster_11866",
+  "cluster_12077", "cluster_30455", "cluster_29958", "cluster_29091",
+  "cluster_13130", "cluster_13816", "cluster_13984", "cluster_17995", tiny_clusters_of_interest$small_cluster_name)
+
+cluster_order <- c("cluster_10627", "cluster_10615", "cluster_11463", "cluster_11866", "cluster_12077", "cluster_30455", "cluster_29958", "cluster_29091", "cluster_13130", "cluster_13816", "cluster_13984", "cluster_17995", "cluster_32692", "cluster_32263", "cluster_93449", "cluster_93199", "cluster_75144", "cluster_42712", "cluster_37754", "cluster_39935", "cluster_46754", "cluster_55536", "cluster_128700", "cluster_101160", "cluster_124553", "cluster_124768", "cluster_124791", "cluster_124839", "cluster_114722", "cluster_114969", "cluster_116873", "cluster_124630", "cluster_124725")
+
+interesting_cluster_annotations <- annotation_summary_by_cluster %>%
+  filter(cluster %in% clusters_to_investigate) %>%
+  mutate(cluster = factor(cluster, levels = cluster_order)) %>%
+  arrange(cluster)
+
+
+too_simple_summarized_cluster_annotations <- interesting_cluster_annotations %>%
+  group_by(cluster) %>%
+  slice_max(order_by = description_percent, n=1) %>%
+  mutate(cluster = factor(cluster, levels = cluster_order)) %>%
+  arrange(cluster)
+
+selected_industrialized_clusters_diff_table <- wilcox_cluster_table %>%
+  dplyr::select(all_of(human_cluster_industrialized_diff$column)) %>%
+  dplyr::select(any_of(clusters_to_investigate)) %>%
+  mutate(industrialized = human_parafit_metadata$industrialized) %>%
+  pivot_longer(!industrialized, names_to="cluster", values_to="abundance") %>%
+  ggplot(aes(x=industrialized, y=abundance)) +
+  geom_jitter(width = 0.15) +
+  geom_boxplot(width=0.4, alpha=0.4, outlier.shape = NA) +
+  facet_wrap(~cluster, scales = "free_y")
+
+# cluster_10615 is good for virulence in industrialized humans, also 13984 is higher in industrialized humans and is virE genes in b vulgatus, then 17995 is igA which is WAY higher in industrialized humans, lots of stuff related to virulence, that's the story for that, and all of the stuff is large I think
+# 12077 is P. copri and is related to Fe2_ dicitrate sensor which regulates GI function and is known to alter microbiota
+# blastp 124553, might be interesting, much higher in non-industrialized
+
+selected_disease_clusters_diff_table <- wilcox_cluster_table %>%
+  dplyr::select(all_of(human_cluster_disease_diff$column)) %>%
+  dplyr::select(any_of(clusters_to_investigate)) %>%
+  mutate(Disease = human_parafit_metadata$disease) %>%
+  pivot_longer(!Disease, names_to="cluster", values_to="abundance") %>%
+  ggplot(aes(x=Disease, y=abundance)) +
+  geom_jitter(width = 0.15) +
+  geom_boxplot(width=0.4, alpha=0.4, outlier.shape = NA) +
+  facet_wrap(~cluster, scales = "free_y")
+
+
+
+```
+
+```{r generate_ggtree_gheatmap_figures}
+# Example usage
+cluster12077_tree <- read.tree(paste0("/raid1/home/micro/hammera/darwinR/IGC/parafit/results/trees/", "cluster_12077", ".nwk"))
+cluster12077_plot <- generate_ggtree_plot(cluster12077_tree, host_taxonomy, "Family", "12077") + 
+  labs(caption=paste0("Inferred Phylogenetic Relationships of Cluster 12077\n(Fe2+ Dicitrate Sensor, Membrane Component)")) +
+  theme(
+    legend.text = element_text(size = 16),   # Adjust legend text size
+    legend.title = element_text(size = 18),  # Adjust legend title size if you have one
+    plot.caption = element_text(size = 15)   # Adjust caption text size
+  )
+cluster12077_abund <- wilcox_cluster_table %>%
+  dplyr::select(cluster_12077) %>%
+  mutate(industrialized = human_parafit_metadata$industrialized) %>%
+  ggplot(aes(x=industrialized, y=cluster_12077)) +
+  geom_jitter(width = 0.15, size=2, (aes(color=industrialized))) +
+  geom_boxplot(width=0.4, alpha=0, outlier.shape = NA) +
+  xlab(NULL) +
+  ylab("Cluster 12077\nFPKM Abundance in Humans") +
+  scale_color_manual(values = industrialized_palette, name=NULL) +
+  theme_bw() +
+  theme(
+    text = element_text(size = 20)  # Set all text elements to size 16
+  )
+
+cluster11463_tree <- read.tree(paste0("/raid1/home/micro/hammera/darwinR/IGC/parafit/results/trees/","cluster_11463", ".nwk"))
+cluster11463_plot <- generate_ggtree_plot(cluster11463_tree, host_taxonomy, "Family", "11463")
+cluster11463_abund <- wilcox_cluster_table %>%
+  dplyr::select(cluster_11463) %>%
+  mutate(industrialized = human_parafit_metadata$industrialized) %>%
+  ggplot(aes(x=industrialized, y=cluster_11463)) +
+  geom_jitter(width = 0.15, size=2, (aes(color=industrialized))) +
+  geom_boxplot(width=0.4, alpha=0, outlier.shape = NA) +
+  xlab(NULL) +
+  scale_color_manual(values = industrialized_palette, name=NULL) +
+  ylab("Cluster 11463\nFPKM Abundance in Humans") +
+  theme_bw() +
+  theme(
+    text = element_text(size = 20)  # Set all text elements to size 16
+  )
+
+
+ggarrange(cluster11463_plot, cluster11463_abund)
+
+cluster17995_tree <- read.tree(paste0("/raid1/home/micro/hammera/darwinR/IGC/parafit/results/trees/","cluster_17995", ".nwk"))
+cluster17995_plot <- generate_ggtree_plot(cluster17995_tree, host_taxonomy, "Family", "17995") + 
+  labs(caption=paste0("Inferred Phylogenetic Relationships of Cluster 17995\n(IgA Peptidase M64)")) +
+  theme(
+    legend.text = element_text(size = 16),   # Adjust legend text size
+    legend.title = element_text(size = 18),  # Adjust legend title size if you have one
+    plot.caption = element_text(size = 15)   # Adjust caption text size
+  )
+cluster17995_abund <- wilcox_cluster_table %>%
+  dplyr::select(cluster_17995) %>%
+  mutate(disease = human_parafit_metadata$disease) %>%
+  ggplot(aes(x=disease, y=cluster_17995)) +
+  geom_jitter(width = 0.15, size=2, (aes(color=disease))) +
+  geom_boxplot(width=0.4, alpha=0, outlier.shape = NA) +
+  xlab(NULL) +
+  scale_color_manual(values = disease_palette, name="Disease Status") +
+  ylab("Cluster 17995\nFPKM Abundance in Humans") +
+  theme_bw()  +
+  theme(
+    text = element_text(size = 20)  # Set all text elements to size 16
+  )
+
+
+ggarrange(cluster17995_plot, cluster17995_abund)
+
+cluster10615_tree <- read.tree(paste0("/raid1/home/micro/hammera/darwinR/IGC/parafit/results/trees/","cluster_10615", ".nwk"))
+cluster10615_plot <- generate_ggtree_plot(cluster10615_tree, host_taxonomy, "Family", "10615") + 
+  labs(caption=paste0("Inferred Phylogenetic Relationships of Cluster 10615\n(Two-Component Histidine Sensor Kinase)")) +
+  theme(
+    legend.text = element_text(size = 16),   # Adjust legend text size
+    legend.title = element_text(size = 18),  # Adjust legend title size if you have one
+    plot.caption = element_text(size = 15)   # Adjust caption text size
+  )
+cluster10615_abund <- wilcox_cluster_table %>%
+  dplyr::select(cluster_10615) %>%
+  mutate(disease = human_parafit_metadata$disease) %>%
+  ggplot(aes(x=disease, y=cluster_10615)) +
+  geom_jitter(width = 0.15, size=2, (aes(color=disease))) +
+  geom_boxplot(width=0.4, alpha=0, outlier.shape = NA) +
+  xlab(NULL) +
+  scale_color_manual(values = disease_palette, name="Disease Status") +
+  ylab("Cluster 10615\nFPKM Abundance in Humans") +
+  theme_bw()  +
+  theme(
+    text = element_text(size = 20)  # Set all text elements to size 16
+  )
+
+rm_legend <- function(p){p + theme(legend.position = "none")}
+
+pf1 <- ggarrange(cluster17995_plot,
+          (cluster10615_plot), 
+          (cluster12077_plot), 
+          ncol = 3, nrow = 1,
+          common.legend = TRUE,
+          labels=c("A", "B", "C"))
+
+pf2 <- ggarrange(rm_legend(cluster17995_abund), rm_legend(cluster10615_abund),
+          rm_legend(cluster12077_abund),
+          ncol=3, nrow=1)
+
+thatree <- function(cluster_num){
+  return(read.tree(paste0("/raid1/home/micro/hammera/darwinR/IGC/parafit/results/trees/cluster_",cluster_num,".nwk")))
+}
+new_tree <- thatree("124791")
+saved_cophylo_plot <- plot_a_tree(all_primates_tree, thatree("114722"))
+
+
+cluster124791_abund <- wilcox_cluster_table %>%
+  dplyr::select(cluster_124791) %>%
+  mutate(industrialized = human_parafit_metadata$industrialized) %>%
+  ggplot(aes(x=industrialized, y=cluster_124791)) +
+  geom_jitter(width = 0.15, size=2, (aes(color=industrialized))) +
+  geom_boxplot(width=0.4, alpha=0, outlier.shape = NA) +
+  xlab(NULL) +
+  ylab("Cluster 124791\nFPKM Abundance in Humans") +
+  scale_color_manual(values = industrialized_palette, name=NULL) +
+  theme_bw()
+  
+
+
+
+```
+
+```{r one_demo_plot}
+# Get all K0 IDs from the rownames
+k0_ids <- p_vals_subset$KO
+
+# List to store individual gheatmap plots
+heatmap_plots <- list()
+
+# Iterate over K0 IDs
+for (i in 1:20) {
+  k0_id <- k0_ids[i]
+  # Filter and build data for the current K0
+  k0_data <- subset_primates_table %>%
+    dplyr::select((k0_id)) %>%
+    mutate(across(all_of(k0_id), scale))
+
+  # Scale and plot
+  pagel_for_heatmap <- (k0_data)
+
+  # Create the gheatmap plot
+  plot <- gheatmap(temp_tree,
+               pagel_for_heatmap,
+               offset = -3,
+               low = "gold",
+               high = "purple",
+               width = 0.1,
+               font.size = 3.5,
+               colnames_angle = 90,
+               colnames = FALSE,
+               legend_title = FALSE) +
+    geom_tiplab(offset = 10) +
+    expand_limits(x = 150) +
+    xlab("") +
+    ggtitle(paste0("Scaled Relative Abundance of ", k0_id)) +
+    theme(legend.position = "none")
+
+  # Store the plot in the list
+  heatmap_plots[[k0_id]] <- plot
+}
+
+combined_plot <- wrap_plots(heatmap_plots, ncol = 4)
+combined_plot
+```
+
+
+
+
+
+
+
+

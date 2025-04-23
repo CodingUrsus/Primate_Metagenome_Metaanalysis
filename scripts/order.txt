@@ -1,0 +1,18 @@
+## order of operations for code here
+
+1. download data using download_sra_data.py
+2. change_SRA_file_names.py
+3. primate_data_to_IGC.py 
+4. translate_fasta.py to produce proteins
+5. cdhit_whole_directory.py to identify non-redundant set of sequences at 95% threshold, then use subset_genes_with_proteins.py to get non-redundant set of genes in DNA
+6. meta_mapper.py will use read_to_bam.py and other scripts to take quality controlled reads, and map them against the IGC
+7. kegg_diamond_mapper.py to mapp to kegg database using the non-redundant sequences
+8. KO_count_table_merge_wrapper.py to merge the kegg and IGC mappings
+9. merge_KO_files.py for all count tables to produce a table that maps everything into one count table
+10.
+
+
+
+
+
+
