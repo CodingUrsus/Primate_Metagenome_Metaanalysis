@@ -17,7 +17,7 @@ The functional composition of primate gut microbiomes shows significant associat
 
 Functional phylosymbiosis is observed across primate taxa, where microbial functional traits mirror host evolutionary relationships. Mantel tests and phylogenetic signal analyses highlight the deep evolutionary ties between host taxa and their associated microbiomes.
 
-![Functional phylosymbiosis](results/figures/micro_mantel.png)
+<img src="results/figures/micro_mantel.png" alt="Functional phylosymbiosis" style="width:60%; height:60%;">
 *Figure 2B: Functional phylosymbiosis across primate host taxa.*
 
 ### Phylogenetic Signal in Microbial Functions
