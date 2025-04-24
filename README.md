@@ -51,7 +51,7 @@ Metagenome-derived microbial protein families display evidence of codiversificat
 The code used for the analysis is organized in the following order:
 
 1.  `download_sra_data.py`: Downloads data from the Sequence Read Archive (SRA).
-2.  `change_SRA_file_names.py`: Changes the names of the SRA files.
+2.  `change_SRA_file_names.py`: Changes the names of the SRA files so that they work across scripts.
 3.  `primate_data_to_IGC.py`:  Processes primate data to produce host-specific sets of metagenome-derived microbial gene content.
 4.  `translate_fasta.py`: Translates nucleotide sequences to protein sequences.
 5.  `cdhit_whole_directory.py` and `subset_genes_with_proteins.py`: Identifies a non-redundant set of sequences at a 95% threshold and retrieves the corresponding non-redundant set of genes.
