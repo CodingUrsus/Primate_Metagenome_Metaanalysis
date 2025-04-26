@@ -39,7 +39,7 @@ Protein family diversity within gut microbes parallels primate host phylogeny. C
 Metagenome-derived microbial protein families display evidence of codiversification with the primate hosts they are derived from. These functions which are linked to primate phylogenetic history are differentially enriched among human subjects with IBD and those who live in industrialized environments.
 
 ![Genus-level protein family phylogeny](results/figures/genus_protein_phylogeny.png)
-*Figure 5A: Phylogenetic trees with heatmap rings of protein family distributions.*
+*Figure 5A: Phylogenetic trees representing host taxonomic membership for protein family distributions.*
 
 ![Functional divergences in human microbiomes](results/figures/human_diffs.png)
 *Figure 5B: Boxplots of functional divergences in human gut microbiomes.*
