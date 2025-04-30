@@ -8,7 +8,7 @@ This repository contains data and code for a meta-analysis of functional metagen
 
 ### Functional Composition and Industrialization
 
-The functional composition of primate gut microbiomes shows significant association with industrialization, dietary strategy, and host taxonomy..
+The functional composition of primate gut microbiomes shows significant association with industrialization, dietary strategy, and host taxonomy.
 
 ![Functional composition ordinations](results/figures/ordinations.png)
 *Figure 1: Functional composition of primate gut microbiomes associates with industrialization, dietary strategy, and host taxonomy.*
